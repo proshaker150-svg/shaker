@@ -176,6 +176,7 @@ class MainActivity : Activity() {
         }
     }
 
+
     private fun analyze(uri: Uri) {
         showAnalysisScreen(uri.lastPathSegment ?: "APK")
 
@@ -185,92 +186,78 @@ class MainActivity : Activity() {
 
                 contentResolver.openInputStream(uri)?.use { input ->
                     FileOutputStream(temp).use { output ->
-                        input.copyTo(output)
+                        val buffer = ByteArray(8192)
+                        var total = 0L
+                        val maxSize = 200L * 1024 * 1024
+
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+
+                            total += count
+                            if (total > maxSize) {
+                                throw Exception("حجم APK يتجاوز 200 MB")
+                            }
+
+                            output.write(buffer, 0, count)
+                        }
                     }
                 } ?: throw Exception("تعذر قراءة ملف APK")
 
-                val found = mutableListOf<String>()
-                var dexCount = 0
+                val result = DexAnalyzer.analyze(temp, indicators)
 
-                ZipFile(temp).use { zip ->
-                    val entries = zip.entries()
-
-                    while (entries.hasMoreElements()) {
-                        val entry = entries.nextElement()
-
-                        if (!entry.name.matches(
-                            Regex("classes(\\d*)?\\.dex")
-                        )) continue
-
-                        dexCount++
-
-                        zip.getInputStream(entry).use { input ->
-                            val bytes = input.readBytes()
-                            val content = bytes.toString(Charsets.ISO_8859_1)
-
-                            for (term in indicators) {
-                                var index = content.indexOf(term)
-
-                                while (index >= 0) {
-                                    found.add(
-                                        "${entry.name} | $term | byte offset $index"
-                                    )
-                                    index = content.indexOf(
-                                        term,
-                                        index + term.length
-                                    )
-                                }
-                            }
-                        }
-                    }
+                val codeText = if (result.matches.isEmpty()) {
+                    "لم يتم العثور على مؤشرات مطابقة."
+                } else {
+                    result.matches.joinToString("\n\n")
                 }
 
-                val unique = found.distinct()
-
-                val codeText = if (unique.isEmpty()) {
-                    "لم يتم العثور على المؤشرات المحددة داخل ملفات DEX."
+                val warningsText = if (result.warnings.isEmpty()) {
+                    "لا توجد تحذيرات."
                 } else {
-                    unique.take(100).joinToString("\n")
+                    result.warnings.joinToString("\n")
                 }
 
                 val fixText =
-                    "هذه مؤشرات أولية وليست إثباتاً على وجود ثغرة. " +
-                    "راجع موضع التحقق من الاستحقاق، واجعل قرار منح " +
-                    "الميزات المدفوعة معتمداً على تحقق موثوق من الخادم. " +
-                    "لا تعدّل منطق الدفع لتجاوز التحقق أو منح استحقاق غير مستحق."
+                    "راجع الكلاس والدالة المحددين في الأدلة. " +
+                    "تحقق من صحة شروط الصلاحيات والاستحقاق، " +
+                    "واجعل التحقق من الاشتراك معتمداً على مصدر موثوق. " +
+                    "المؤشرات المكتشفة ليست وحدها إثباتاً لوجود ثغرة."
 
                 val benefitText =
-                    "• تقليل مخاطر التلاعب بالاستحقاقات.\n" +
-                    "• تحسين سلامة التحقق من الاشتراك.\n" +
-                    "• تقليل أخطاء انتهاء وتجديد الاشتراك.\n" +
-                    "• تحسين وضوح منطق الوصول إلى الميزات."
+                    "• تحديد الكلاسات والدوال المرتبطة بالمؤشرات.\n" +
+                    "• تسهيل مراجعة منطق الاشتراكات.\n" +
+                    "• اكتشاف مواضع الثقة غير الآمنة المحتملة.\n" +
+                    "• تحسين حماية الصلاحيات والاستحقاقات."
 
                 runOnUiThread {
                     codeSection.text =
                         "1 ـ مكان الكود\n\n" +
-                        "ملفات DEX المكتشفة: $dexCount\n" +
-                        "عدد المطابقات: ${unique.size}\n\n" +
+                        "ملفات DEX: ${result.dexCount}\n" +
+                        "عدد النتائج: ${result.matches.size}\n\n" +
                         codeText +
-                        "\n\nملاحظة: إزاحات DEX ليست أرقام أسطر Smali."
+                        "\n\nالتحذيرات:\n$warningsText"
 
                     fixSection.text =
-                        "2 ـ التعديل المناسب\n\n$fixText"
+                        "2 ـ التعديل الأمني المقترح\n\n$fixText"
 
                     benefitSection.text =
-                        "3 ـ فوائد التعديل\n\n$benefitText"
+                        "3 ـ فوائد الإصلاح\n\n$benefitText"
 
                     report.text =
-                        "اكتمل الفحص الأولي.\n" +
-                        "المؤشرات المكتشفة: ${unique.size}\n" +
-                        "ملفات DEX: $dexCount\n" +
-                        "هذا الفحص لا يفك تشفير DEX إلى فئات ودوال."
+                        "اكتمل تحليل DEX.\n" +
+                        "ملفات DEX: ${result.dexCount}\n" +
+                        "النتائج: ${result.matches.size}\n" +
+                        "عناوين التعليمات ليست أرقام أسطر Smali."
                 }
 
             } catch (e: Exception) {
                 runOnUiThread {
-                    report.text = "حدث خطأ أثناء التحليل: ${e.message}"
+                    report.text =
+                        "حدث خطأ أثناء التحليل: ${e.message}"
                 }
             }
         }.start()
     }
+
 }
